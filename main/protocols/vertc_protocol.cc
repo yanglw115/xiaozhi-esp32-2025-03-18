@@ -275,6 +275,57 @@ void VeRtcProtocol::Start() {
     };
 
     byte_rtc_engine_t engine = byte_rtc_create(room_info->app_id, &handler);
+    byte_rtc_set_log_level(engine, BYTE_RTC_LOG_LEVEL_ERROR);
+    byte_rtc_set_params(engine, "{\"debug\":{\"log_to_console\":1}}"); 
+
+    byte_rtc_init(engine);
+    byte_rtc_set_audio_codec(engine, AUDIO_CODEC_TYPE_G711A);
+    byte_rtc_set_video_codec(engine, VIDEO_CODEC_TYPE_H264);
+
+    // 设置上下文，便于在回调中获取上下文中的内容
+    engine_context_t engine_context = {
+        .player_pipeline = player_pipeline,
+        .room_info = room_info
+    };
+    byte_rtc_set_user_data(engine, &engine_context);
+
+    byte_rtc_room_options_t options;
+    options.auto_subscribe_audio = 1; // 接收远端音频
+    options.auto_subscribe_video = 0; // 不接收远端视频
+    byte_rtc_join_room(engine, room_info->room_id, room_info->uid, room_info->token, &options);
+    
+    const int DEFAULT_READ_SIZE = recorder_pipeline_get_default_read_size(pipeline);
+    uint8_t *audio_buffer = heap_caps_malloc(DEFAULT_READ_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!audio_buffer) {
+        ESP_LOGE(TAG, "Failed to alloc audio buffer!");
+        return;
+    }
+
+    // 发送音频数据，根据需要设置打断循环条件
+    while (true) {
+        int ret =  recorder_pipeline_read(pipeline, (char*) audio_buffer, DEFAULT_READ_SIZE);
+        if (ret == DEFAULT_READ_SIZE && joined) {
+            // push_audio data
+            audio_frame_info_t audio_frame_info = {.data_type = AUDIO_DATA_TYPE_PCMA};
+            byte_rtc_send_audio_data(engine, room_info->room_id, audio_buffer, DEFAULT_READ_SIZE, &audio_frame_info);
+        }
+    }
+
+    // 离开房间，销毁引擎
+    byte_rtc_leave_room(engine, room_info->room_id);
+    usleep(1000 * 1000);
+    byte_rtc_fini(engine);
+    usleep(1000 * 1000);
+    byte_rtc_destory(engine);
+    
+    // 关闭智能体，如果不主动调用， 智能体会在远端离开后3分钟离开
+    stop_voice_bot(room_info);
+    heap_caps_free(room_info);
+
+    // 关闭音频采播
+    recorder_pipeline_close(pipeline);
+    player_pipeline_close(player_pipeline);
+    ESP_LOGI(TAG, "............. finished\n");
 }
 
 void VeRtcProtocol::SendAudio(const std::vector<uint8_t>& data) {
