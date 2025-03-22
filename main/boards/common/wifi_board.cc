@@ -20,6 +20,7 @@
 #include <wifi_station.h>
 #include <wifi_configuration_ap.h>
 #include <ssid_manager.h>
+#include <esp_wifi.h>
 
 static const char *TAG = "WifiBoard";
 
@@ -99,6 +100,18 @@ void WifiBoard::StartNetwork() {
         display->ShowNotification(notification.c_str(), 30000);
     });
     wifi_station.Start();
+
+    // Set TX power to 8.5dB (34 * 0.25分贝 = 8.5分贝)
+    // yanglw
+    esp_err_t err = esp_wifi_set_max_tx_power(34);
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to set WiFi TX power: %s", esp_err_to_name(err));
+    }
+    else
+    {
+        ESP_LOGI(TAG, "WiFi TX power set to 8.5dB");
+    }
 
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
     if (!wifi_station.WaitForConnected(60 * 1000)) {
