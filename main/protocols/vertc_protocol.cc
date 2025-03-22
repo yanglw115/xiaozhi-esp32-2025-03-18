@@ -8,8 +8,78 @@
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
+#include "VolcEngineRTCLite.h"
 
 #define TAG "VERTC"
+
+static bool joined = false;
+
+typedef struct {
+    char room_id[129];
+    char uid[129];
+    char app_id[25];
+    char token[257];
+} rtc_room_info_t;
+
+typedef struct {
+    //player_pipeline_handle_t player_pipeline; // todo: 
+    rtc_room_info_t* room_info;
+    char remote_uid[128];
+} engine_context_t;
+
+// byte rtc lite callbacks
+static void byte_rtc_on_join_room_success(byte_rtc_engine_t engine, const char* channel, int elapsed_ms, bool something) {
+    ESP_LOGI(TAG, "join channel success %s elapsed %d ms now %d ms\n", channel, elapsed_ms, elapsed_ms);
+    joined = true;
+};
+
+static void byte_rtc_on_rejoin_room_success(byte_rtc_engine_t engine, const char* channel, int elapsed_ms){
+    // g_byte_rtc_data.channel_joined = TRUE;
+    ESP_LOGI(TAG, "rejoin channel success %s\n", channel);
+};
+
+static void byte_rtc_on_user_joined(byte_rtc_engine_t engine, const char* channel, const char* user_name, int elapsed_ms){
+    ESP_LOGI(TAG, "remote user joined  %s:%s\n", channel, user_name);
+    engine_context_t* context = (engine_context_t *) byte_rtc_get_user_data(engine);
+    strcpy(context->remote_uid, user_name);
+};
+
+static void byte_rtc_on_user_offline(byte_rtc_engine_t engine, const char* channel, const char* user_name, int reason){
+    ESP_LOGI(TAG, "remote user offline  %s:%s\n", channel, user_name);
+};
+
+static void byte_rtc_on_user_mute_audio(byte_rtc_engine_t engine, const char* channel, const char* user_name, int muted){
+    ESP_LOGI(TAG, "remote user mute audio  %s:%s %d\n", channel, user_name, muted);
+};
+
+static void byte_rtc_on_user_mute_video(byte_rtc_engine_t engine, const char* channel, const char* user_name, int muted){
+    ESP_LOGI(TAG, "remote user mute video  %s:%s %d\n", channel, user_name, muted);
+};
+
+static void byte_rtc_on_connection_lost(byte_rtc_engine_t engine, const char* channel){
+    ESP_LOGI(TAG, "connection Lost  %s\n", channel);
+};
+
+static void byte_rtc_on_room_error(byte_rtc_engine_t engine, const char* channel, int code, const char* msg){
+    ESP_LOGE(TAG, "error occur %s %d %s\n", channel, code, msg?msg:"");
+};
+
+// remote audio
+static void byte_rtc_on_audio_data(byte_rtc_engine_t engine, const char* channel, const char*  uid , uint16_t sent_ts,
+                      audio_codec_type_e codec, const void* data_ptr, size_t data_len){
+    // ESP_LOGI(TAG, "byte_rtc_on_audio_data... len %d\n", data_len);
+
+    engine_context_t* context = (engine_context_t *) byte_rtc_get_user_data(engine);
+    //player_pipeline_write(context->player_pipeline, data_ptr, data_len);
+
+}
+
+// remote video
+static void byte_rtc_on_video_data(byte_rtc_engine_t engine, const char*  channel, const char* uid, uint16_t sent_ts,
+                      video_data_type_e codec, int is_key_frame,
+                      const void * data_ptr, size_t data_len){
+    ESP_LOGI(TAG, "byte_rtc_on_video_data... len %d\n", data_len);
+}
 
 VeRtcProtocol::VeRtcProtocol() {
     event_group_handle_ = xEventGroupCreate();
@@ -22,7 +92,189 @@ VeRtcProtocol::~VeRtcProtocol() {
     vEventGroupDelete(event_group_handle_);
 }
 
+static void on_key_frame_gen_req(byte_rtc_engine_t engine, const char*  channel, const char*  uid) {}
+
+// remote message
+// 字幕消息 参考https://www.volcengine.com/docs/6348/1337284
+static void on_subtitle_message_received(byte_rtc_engine_t engine, const cJSON* root) {
+    /*
+        {
+            "data" : 
+            [
+                {
+                    "definite" : false,
+                    "language" : "zh",
+                    "mode" : 1,
+                    "paragraph" : false,
+                    "sequence" : 0,
+                    "text" : "\\u4f60\\u597d",
+                    "userId" : "voiceChat_xxxxx"
+                }
+            ],
+            "type" : "subtitle"
+        }
+    */
+    cJSON * type_obj = cJSON_GetObjectItem(root, "type");
+    if (type_obj != NULL && strcmp("subtitle", cJSON_GetStringValue(type_obj)) == 0) {
+        cJSON* data_obj_arr = cJSON_GetObjectItem(root, "data");
+        cJSON* obji = NULL;
+        cJSON_ArrayForEach(obji, data_obj_arr) {
+            cJSON* user_id_obj = cJSON_GetObjectItem(obji, "userId");
+            cJSON* text_obj = cJSON_GetObjectItem(obji, "text");
+            if (user_id_obj && text_obj) {
+                ESP_LOGE(TAG, "subtitle:%s:%s", cJSON_GetStringValue(user_id_obj), cJSON_GetStringValue(text_obj));
+            }
+        }
+    }
+}
+
+// function calling 消息 参考 https://www.volcengine.com/docs/6348/1359441
+static void on_function_calling_message_received(byte_rtc_engine_t engine, const cJSON* root, const char* json_str) {
+    /*
+        {
+            "subscriber_user_id" : "",
+            "tool_calls" : 
+            [
+                {
+                    "function" : 
+                    {
+                        "arguments" : "{\\"location\\": \\"\\u5317\\u4eac\\u5e02\\"}",
+                        "name" : "get_current_weather"
+                    },
+                    "id" : "call_py400kek0e3pczrqdxgnb3lo",
+                    "type" : "function"
+                }
+            ]
+        }
+    */
+    // 收到function calling 消息，需要根据具体情况要在服务端处理还是客户端处理
+
+    engine_context_t* context = (engine_context_t *) byte_rtc_get_user_data(engine);
+    
+    // 服务端处理：
+    // voice_bot_function_calling(context->room_info, json_str);
+
+    // 在客户端处理,通过byte_rtc_rts_send_message接口通知智能体
+    /*cJSON* tool_obj_arr = cJSON_GetObjectItem(root, "tool_calls");
+    cJSON* obji = NULL;
+    cJSON_ArrayForEach(obji, tool_obj_arr) {
+        cJSON* id_obj = cJSON_GetObjectItem(obji, "id");
+        cJSON* function_obj = cJSON_GetObjectItem(obji, "function");
+        if (id_obj && function_obj) {
+            cJSON* arguments_obj = cJSON_GetObjectItem(function_obj, "arguments");
+            cJSON* name_obj = cJSON_GetObjectItem(function_obj, "name");
+            cJSON* location_obj = cJSON_GetObjectItem(arguments_obj, "arguments");
+            const char* func_name = cJSON_GetStringValue(name_obj);
+            const char* loction = cJSON_GetStringValue(location_obj);
+            const char* func_id = cJSON_GetStringValue(id_obj);
+
+            if (strcmp(func_name, "get_current_weather") == 0) {
+                cJSON *fc_obj = cJSON_CreateObject();
+                cJSON_AddStringToObject(fc_obj, "ToolCallID", func_id);
+                cJSON_AddStringToObject(fc_obj, "Content", "今天白天风和日丽，天气晴朗，晚上阵风二级。");
+                char *json_string = cJSON_Print(fc_obj);
+                static char fc_message_buffer[256] = {'f', 'u', 'n', 'c'};
+                int json_str_len = strlen(json_string);
+                fc_message_buffer[4] = (json_str_len >> 24) & 0xff;
+                fc_message_buffer[5] = (json_str_len >> 16) & 0xff;
+                fc_message_buffer[6] = (json_str_len >> 8) & 0xff;
+                fc_message_buffer[7] = (json_str_len >> 0) & 0xff;
+                memcpy(fc_message_buffer + 8, json_string, json_str_len);
+                ESP_LOGE(TAG, "send message: %s", json_string);
+                cJSON_Delete(fc_obj);
+
+                byte_rtc_rts_send_message(engine, context->room_info->room_id, context->remote_uid, fc_message_buffer, json_str_len + 8, 1, RTS_MESSAGE_RELIABLE);
+            }
+        }
+    }*/
+   
+}
+
+void on_message_received(byte_rtc_engine_t engine, const char*  room, const char* uid, const uint8_t* message, int size, bool binary) {
+    // 字幕消息，参考https://www.volcengine.com/docs/6348/1337284
+    // subv|length(4)|json str
+    //
+    // function calling 消息，参考https://www.volcengine.com/docs/6348/1359441
+    // tool|length(4)|json str
+
+    static char message_buffer[4096];
+    if (size > 8) {
+        memcpy(message_buffer, message, size);
+        message_buffer[size] = 0;
+        message_buffer[size + 1] = 0;
+        cJSON *root = cJSON_Parse(message_buffer + 8);
+        if (root != NULL) {
+            if (message[0] == 's' && message[1] == 'u' && message[2] == 'b' && message[3] == 'v') {
+                // 字幕消息
+                on_subtitle_message_received(engine, root);
+            } else if (message[0] == 't' && message[1] == 'o' && message[2] == 'o' && message[3] == 'l') {
+                // function calling 消息
+                on_function_calling_message_received(engine, root, message_buffer + 8);
+            } else {
+                ESP_LOGE(TAG, "unknown json message: %s", message_buffer + 8);
+            }
+            cJSON_Delete(root);
+        } else {
+            ESP_LOGE(TAG, "unknown message.");
+        }
+    } else {
+        ESP_LOGE(TAG, "unknown message.");
+    }
+}
+
+void byte_rtc_on_global_error(byte_rtc_engine_t engine,int code, const char * msg) 
+{
+
+}
+
+void byte_rtc_on_target_bitrate_changed(byte_rtc_engine_t engine,const char * room, uint32_t target_bps)
+{
+
+}
+
+void byte_rtc_on_message_send_result(byte_rtc_engine_t engine,const char * room,int64_t msgid, int error,const char * extencontent)
+{
+
+}
+
+void byte_rtc_on_token_privilege_will_expire(byte_rtc_engine_t engine,const char * room)
+{
+
+}
+
+void byte_rtc_on_license_expire_warning(byte_rtc_engine_t engine,int daysleft)
+{
+
+}
+
+void byte_rtc_on_fini_notify(byte_rtc_engine_t engine)
+{
+
+}
+
 void VeRtcProtocol::Start() {
+    rtc_room_info_t* room_info = (rtc_room_info_t*)heap_caps_malloc(sizeof(rtc_room_info_t),  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // 创建引擎，加入房间
+    byte_rtc_event_handler_t handler = {
+        .on_global_error            =   byte_rtc_on_global_error,
+        .on_join_room_success       =   byte_rtc_on_join_room_success,
+        .on_room_error              =   byte_rtc_on_room_error,
+        .on_user_joined             =   byte_rtc_on_user_joined,
+        .on_user_offline            =   byte_rtc_on_user_offline,
+        .on_user_mute_audio         =   byte_rtc_on_user_mute_audio,
+        .on_user_mute_video         =   byte_rtc_on_user_mute_video,
+        .on_key_frame_gen_req       =   on_key_frame_gen_req,
+        .on_audio_data              =   byte_rtc_on_audio_data,
+        .on_video_data              =   byte_rtc_on_video_data,
+        .on_target_bitrate_changed  =   byte_rtc_on_target_bitrate_changed,
+        .on_message_received        =   on_message_received,
+        .on_message_send_result     =   byte_rtc_on_message_send_result,
+        .on_token_privilege_will_expire = byte_rtc_on_token_privilege_will_expire,
+        .on_license_expire_warning  = byte_rtc_on_license_expire_warning,
+        .on_fini_notify             = byte_rtc_on_fini_notify
+    };
+
+    byte_rtc_engine_t engine = byte_rtc_create(room_info->app_id, &handler);
 }
 
 void VeRtcProtocol::SendAudio(const std::vector<uint8_t>& data) {

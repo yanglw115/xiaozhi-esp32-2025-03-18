@@ -6,6 +6,7 @@
 #include "audio_codec.h"
 #include "mqtt_protocol.h"
 #include "websocket_protocol.h"
+#include "vertc_protocol.h"
 #include "font_awesome_symbols.h"
 #include "iot/thing_manager.h"
 #include "assets/lang_config.h"
@@ -363,8 +364,10 @@ void Application::Start() {
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 #ifdef CONFIG_CONNECTION_TYPE_WEBSOCKET
     protocol_ = std::make_unique<WebsocketProtocol>();
-#else
+#elif defined CONFIG_CONNECTION_TYPE_MQTT_UDP
     protocol_ = std::make_unique<MqttProtocol>();
+#elif defined CONFIG_CONNECTION_TYPE_VE_RTC
+    protocol_ = std::make_unique<VeRtcProtocol>();
 #endif
     protocol_->OnNetworkError([this](const std::string& message) {
         SetDeviceState(kDeviceStateIdle);
