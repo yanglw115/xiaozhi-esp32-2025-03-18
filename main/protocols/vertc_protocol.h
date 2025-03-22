@@ -1,24 +1,14 @@
-#ifndef VE_RTC_PROTOCOL_H
-#define VE_RTC_PROTOCOL_H
+#ifndef _VERTC_PROTOCOL_H_
+#define _VERTC_PROTOCOL_H_
 
 
 #include "protocol.h"
-// #include <mqtt.h>
-#include <udp.h>
-#include <cJSON.h>
-#include <mbedtls/aes.h>
+
+#include <web_socket.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 
-#include <functional>
-#include <string>
-#include <map>
-#include <mutex>
-
-#define VE_RTC_PING_INTERVAL_SECONDS 90
-#define VE_RTC_RECONNECT_INTERVAL_MS 10000
-
-#define VE_RTC_PROTOCOL_SERVER_HELLO_EVENT (1 << 0)
+#define VERTC_PROTOCOL_SERVER_HELLO_EVENT (1 << 0)
 
 class VeRtcProtocol : public Protocol {
 public:
@@ -33,29 +23,10 @@ public:
 
 private:
     EventGroupHandle_t event_group_handle_;
+    WebSocket* websocket_ = nullptr;
 
-    std::string endpoint_;
-    std::string client_id_;
-    std::string username_;
-    std::string password_;
-    std::string publish_topic_;
-
-    std::mutex channel_mutex_;
-    VeRtc* vertc_ = nullptr;
-    Udp* udp_ = nullptr;
-    mbedtls_aes_context aes_ctx_;
-    std::string aes_nonce_;
-    std::string udp_server_;
-    int udp_port_;
-    uint32_t local_sequence_;
-    uint32_t remote_sequence_;
-
-    bool StartVeRtcClient(bool report_error=false);
     void ParseServerHello(const cJSON* root);
-    std::string DecodeHexString(const std::string& hex_string);
-
     void SendText(const std::string& text) override;
 };
 
-
-#endif // VE_RTC_PROTOCOL_H
+#endif
