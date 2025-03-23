@@ -35,7 +35,7 @@ public:
         return session_id_;
     }
 
-    void OnIncomingAudio(std::function<void(std::vector<uint8_t>&& data)> callback);
+    virtual void OnIncomingAudio(std::function<void(std::vector<uint8_t>&& data)> callback);
     void OnIncomingJson(std::function<void(const cJSON* root)> callback);
     void OnAudioChannelOpened(std::function<void()> callback);
     void OnAudioChannelClosed(std::function<void()> callback);
@@ -53,9 +53,9 @@ public:
     virtual void SendIotDescriptors(const std::string& descriptors);
     virtual void SendIotStates(const std::string& states);
 
-protected:
-    std::function<void(const cJSON* root)> on_incoming_json_;
+    protected:
     std::function<void(std::vector<uint8_t>&& data)> on_incoming_audio_;
+    std::function<void(const cJSON* root)> on_incoming_json_;
     std::function<void()> on_audio_channel_opened_;
     std::function<void()> on_audio_channel_closed_;
     std::function<void(const std::string& message)> on_network_error_;

@@ -8,24 +8,12 @@
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include "assets/lang_config.h"
-#include "VolcEngineRTCLite.h"
 
 #define TAG "VERTC"
 
 static bool joined = false;
 
-typedef struct {
-    char room_id[129];
-    char uid[129];
-    char app_id[25];
-    char token[257];
-} rtc_room_info_t;
-
-typedef struct {
-    //player_pipeline_handle_t player_pipeline; // todo: 
-    rtc_room_info_t* room_info;
-    char remote_uid[128];
-} engine_context_t;
+static std::function<void(std::vector<uint8_t>&& data)> g_on_incoming_audio = nullptr;
 
 // byte rtc lite callbacks
 static void byte_rtc_on_join_room_success(byte_rtc_engine_t engine, const char* channel, int elapsed_ms, bool something) {
@@ -39,38 +27,43 @@ static void byte_rtc_on_rejoin_room_success(byte_rtc_engine_t engine, const char
 };
 
 static void byte_rtc_on_user_joined(byte_rtc_engine_t engine, const char* channel, const char* user_name, int elapsed_ms){
-    ESP_LOGI(TAG, "remote user joined  %s:%s\n", channel, user_name);
+    ESP_LOGI(TAG, "remote user joined  %s:%s\n", channel ? channel : "", user_name ? user_name : "");
     engine_context_t* context = (engine_context_t *) byte_rtc_get_user_data(engine);
     strcpy(context->remote_uid, user_name);
 };
 
 static void byte_rtc_on_user_offline(byte_rtc_engine_t engine, const char* channel, const char* user_name, int reason){
-    ESP_LOGI(TAG, "remote user offline  %s:%s\n", channel, user_name);
+    ESP_LOGI(TAG, "remote user offline  %s:%s\n", channel ? channel : "", user_name ? user_name : "");
 };
 
 static void byte_rtc_on_user_mute_audio(byte_rtc_engine_t engine, const char* channel, const char* user_name, int muted){
-    ESP_LOGI(TAG, "remote user mute audio  %s:%s %d\n", channel, user_name, muted);
+    ESP_LOGI(TAG, "remote user mute audio  %s:%s %d\n", channel ? channel : "", user_name ? user_name : "", muted);
 };
 
 static void byte_rtc_on_user_mute_video(byte_rtc_engine_t engine, const char* channel, const char* user_name, int muted){
-    ESP_LOGI(TAG, "remote user mute video  %s:%s %d\n", channel, user_name, muted);
+    ESP_LOGI(TAG, "remote user mute video  %s:%s %d\n", channel ? channel : "", user_name ? user_name : "", muted);
 };
 
 static void byte_rtc_on_connection_lost(byte_rtc_engine_t engine, const char* channel){
-    ESP_LOGI(TAG, "connection Lost  %s\n", channel);
+    ESP_LOGI(TAG, "connection Lost  %s\n", channel ? channel : "");
 };
 
 static void byte_rtc_on_room_error(byte_rtc_engine_t engine, const char* channel, int code, const char* msg){
-    ESP_LOGE(TAG, "error occur %s %d %s\n", channel, code, msg?msg:"");
+    ESP_LOGE(TAG, "on room error: error occur %s %d %s\n", channel, code, msg?msg:"");
 };
 
 // remote audio
 static void byte_rtc_on_audio_data(byte_rtc_engine_t engine, const char* channel, const char*  uid , uint16_t sent_ts,
                       audio_codec_type_e codec, const void* data_ptr, size_t data_len){
-    // ESP_LOGI(TAG, "byte_rtc_on_audio_data... len %d\n", data_len);
+    ESP_LOGI(TAG, "byte_rtc_on_audio_data... len %d\n", data_len);
+    ESP_LOGI(TAG, "byte_rtc_on_audio_data... codec type %d\n", codec);
 
-    engine_context_t* context = (engine_context_t *) byte_rtc_get_user_data(engine);
+    // engine_context_t* context = (engine_context_t *) byte_rtc_get_user_data(engine);
     //player_pipeline_write(context->player_pipeline, data_ptr, data_len);
+    // std::vector<uint8_t> data((uint8_t*)data_ptr, (uint8_t*)data_ptr + data_len);
+    // if (g_on_incoming_audio != nullptr && data_ptr != nullptr) {
+    //     g_on_incoming_audio(std::move(data));
+    // }
 
 }
 
@@ -83,6 +76,7 @@ static void byte_rtc_on_video_data(byte_rtc_engine_t engine, const char*  channe
 
 VeRtcProtocol::VeRtcProtocol() {
     event_group_handle_ = xEventGroupCreate();
+    on_incoming_audio_ = nullptr;
 }
 
 VeRtcProtocol::~VeRtcProtocol() {
@@ -92,7 +86,11 @@ VeRtcProtocol::~VeRtcProtocol() {
     vEventGroupDelete(event_group_handle_);
 }
 
-static void on_key_frame_gen_req(byte_rtc_engine_t engine, const char*  channel, const char*  uid) {}
+// 提示流发布端需重新生成关键帧的回调
+static void on_key_frame_gen_req(byte_rtc_engine_t engine, const char*  channel, const char*  uid)
+{
+
+}
 
 // remote message
 // 字幕消息 参考https://www.volcengine.com/docs/6348/1337284
@@ -222,9 +220,10 @@ void on_message_received(byte_rtc_engine_t engine, const char*  room, const char
     }
 }
 
-void byte_rtc_on_global_error(byte_rtc_engine_t engine,int code, const char * msg) 
+// SDK 错误信息回调
+void byte_rtc_on_global_error(byte_rtc_engine_t engine, int code, const char * msg) 
 {
-
+    ESP_LOGE(TAG, "code(%d), message(%s).", code, msg ? msg : "");
 }
 
 void byte_rtc_on_target_bitrate_changed(byte_rtc_engine_t engine,const char * room, uint32_t target_bps)
@@ -232,28 +231,40 @@ void byte_rtc_on_target_bitrate_changed(byte_rtc_engine_t engine,const char * ro
 
 }
 
+// 实时信令消息发送结果通知
 void byte_rtc_on_message_send_result(byte_rtc_engine_t engine,const char * room,int64_t msgid, int error,const char * extencontent)
 {
-
+    ESP_LOGE(TAG, "error(%d), extencontent(%s).", error, extencontent);
 }
 
+// Token 加入房间权限过期前 30 秒，触发该回调
 void byte_rtc_on_token_privilege_will_expire(byte_rtc_engine_t engine,const char * room)
 {
-
+    ESP_LOGE(TAG, "room(%s).", room);
 }
 
+// license 过期提醒。在剩余天数低于 30 天时，收到此回调
 void byte_rtc_on_license_expire_warning(byte_rtc_engine_t engine,int daysleft)
 {
-
+    ESP_LOGW(TAG, "days left(%d).", daysleft);
 }
 
+// engine 实例清理(byte_rtc_fini)结束通知，只有收到该通知之后，重新创建实例(byte_rtc_init)才是安全的
 void byte_rtc_on_fini_notify(byte_rtc_engine_t engine)
 {
+    ESP_LOGI(TAG, "");
+}
 
+void VeRtcProtocol::InitRoomInfo()
+{
+    strcpy(roomInfo->app_id, BYTE_RTC_APP_ID.c_str());
+    strcpy(roomInfo->room_id, BYTE_RTC_ROOM_ID.c_str());
+    strcpy(roomInfo->uid, BYTE_RTC_UID.c_str());
+    strcpy(roomInfo->token, BYTE_RTC_TOKEN.c_str());
 }
 
 void VeRtcProtocol::Start() {
-    rtc_room_info_t* room_info = (rtc_room_info_t*)heap_caps_malloc(sizeof(rtc_room_info_t),  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    roomInfo = (rtc_room_info_t*)heap_caps_malloc(sizeof(rtc_room_info_t),  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     // 创建引擎，加入房间
     byte_rtc_event_handler_t handler = {
         .on_global_error            =   byte_rtc_on_global_error,
@@ -274,81 +285,176 @@ void VeRtcProtocol::Start() {
         .on_fini_notify             = byte_rtc_on_fini_notify
     };
 
-    byte_rtc_engine_t engine = byte_rtc_create(room_info->app_id, &handler);
+    // 初始化room信息，临时用token，不需要向服务器去请求，但是需要在官网启动智能体
+    InitRoomInfo();
+    // 创建引擎实例
+    engine = byte_rtc_create(roomInfo->app_id, &handler);
+    if (NULL == engine) {
+        ESP_LOGE(TAG, "byte_rtc_create failed!");
+        return;
+    }
     byte_rtc_set_log_level(engine, BYTE_RTC_LOG_LEVEL_ERROR);
-    byte_rtc_set_params(engine, "{\"debug\":{\"log_to_console\":1}}"); 
+    byte_rtc_set_params(engine, "{\"debug\":{\"log_to_console\":1}}");    
+    // byte_rtc_set_params(engine,"{\"rtc\":{\"thread\":{\"pinned_to_core\":1}}}");
+    // byte_rtc_set_params(engine,"{\"rtc\":{\"thread\":{\"priority\":5}}}");
+ 
 
-    byte_rtc_init(engine);
-    byte_rtc_set_audio_codec(engine, AUDIO_CODEC_TYPE_G711A);
-    byte_rtc_set_video_codec(engine, VIDEO_CODEC_TYPE_H264);
+    // 初始化引擎实例，只能初始化一次
+    // 0：成功 <br>
+    // -1: appid 或 event_handler 为空 <br>
+    // -2：引擎实例已被初始化 <br>
+    // -3：引擎实例创建失败，请检查是否有可用内存
+    int iInit = byte_rtc_init(engine);
+    switch (iInit) {
+        case 0: 
+            ESP_LOGI(TAG, "byte_rtc_init successful!");
+            break;
+        case -1:
+            ESP_LOGE(TAG, "byte_rtc_init failed! appid or event_handler is null!");
+            return;
+            break;
+        case -2:
+            ESP_LOGW(TAG, "byte_rtc_init has been inited!");
+            return;
+            break;
+        case -3:
+            ESP_LOGE(TAG, "byte_rtc_init failed! Engine instance create failed, please check the memory is enough!");
+            return;
+            break;
+        default:
+            ESP_LOGW(TAG, "byte_rtc_init returned invalid value(%d)!", iInit);
+            break;
+    }
+    byte_rtc_set_audio_codec(engine, AUDIO_CODEC_TYPE_OPUS);
+    // byte_rtc_set_video_codec(engine, VIDEO_CODEC_TYPE_H264);
 
     // 设置上下文，便于在回调中获取上下文中的内容
     engine_context_t engine_context = {
-        .player_pipeline = player_pipeline,
-        .room_info = room_info
+        //.player_pipeline = player_pipeline,
+        // .on_incoming_audio = this->on_incoming_audio_,
+        .room_info = roomInfo,
     };
+    // 将自定义的数据与引擎实例关联起来
     byte_rtc_set_user_data(engine, &engine_context);
 
     byte_rtc_room_options_t options;
     options.auto_subscribe_audio = 1; // 接收远端音频
     options.auto_subscribe_video = 0; // 不接收远端视频
-    byte_rtc_join_room(engine, room_info->room_id, room_info->uid, room_info->token, &options);
-    
-    const int DEFAULT_READ_SIZE = recorder_pipeline_get_default_read_size(pipeline);
-    uint8_t *audio_buffer = heap_caps_malloc(DEFAULT_READ_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!audio_buffer) {
-        ESP_LOGE(TAG, "Failed to alloc audio buffer!");
-        return;
+    // 加入房间
+    int iJoinRoom = byte_rtc_join_room(engine, roomInfo->room_id, roomInfo->uid, roomInfo->token, &options);
+    // 0：成功 <br>
+    // 1：引擎实例不存在 <br>
+    // -2：输入参数为空 <br>
+    // -3：已加入过房间
+    switch (iJoinRoom)
+    {
+    case 0:
+        ESP_LOGI(TAG, "byte_rtc_join_room successful!");
+        break;
+    case -1:
+        ESP_LOGE(TAG, "byte_rtc_join_room failed! The engine instance is not exist!");
+        break;
+    case -2:
+        ESP_LOGE(TAG, "byte_rtc_join_room failed! Input param is null!");
+        break;
+    case -3:
+        ESP_LOGE(TAG, "byte_rtc_join_room: has joined room!");
+        break;
+    default:
+        ESP_LOGW(TAG, "byte_rtc_join_room: invalid return value(%d)", iJoinRoom);
+        break;
     }
 
-    // 发送音频数据，根据需要设置打断循环条件
-    while (true) {
-        int ret =  recorder_pipeline_read(pipeline, (char*) audio_buffer, DEFAULT_READ_SIZE);
-        if (ret == DEFAULT_READ_SIZE && joined) {
-            // push_audio data
-            audio_frame_info_t audio_frame_info = {.data_type = AUDIO_DATA_TYPE_PCMA};
-            byte_rtc_send_audio_data(engine, room_info->room_id, audio_buffer, DEFAULT_READ_SIZE, &audio_frame_info);
-        }
-    }
-
+    return;
+    // DOTO: 目前没有条件触发离开房间，暂时不需要离开
     // 离开房间，销毁引擎
-    byte_rtc_leave_room(engine, room_info->room_id);
+    // 0：成功 <br>
+    // -1：引擎实例不存在 <br>
+    // -2：输入参数为空
+    int iLeave = byte_rtc_leave_room(engine, roomInfo->room_id);
+    switch (iLeave)
+    {
+    case 0:
+        ESP_LOGI(TAG, "byte_rtc_leave_room successful!");
+        break;
+    case -1:
+        ESP_LOGE(TAG, "byte_rtc_leave_room failed! The engine instance is not exist!");
+        break;
+    case -2:
+        ESP_LOGE(TAG, "byte_rtc_leave_room failed! Input param is null!");
+        break;
+    default:
+        ESP_LOGW(TAG, "byte_rtc_leave_room: invalid return value(%d)", iLeave);
+        break;
+    }
     usleep(1000 * 1000);
-    byte_rtc_fini(engine);
+    // 销毁引擎实例
+    int iFinish = byte_rtc_fini(engine);
+    switch (iFinish)
+    {
+    case 0:
+        ESP_LOGI(TAG, "byte_rtc_fini successful!");
+        break;
+    case -1:
+        ESP_LOGE(TAG, "byte_rtc_fini failed! The engine instance is not exist!");
+        break;
+    default:
+        ESP_LOGW(TAG, "byte_rtc_fini: invalid return value(%d)", iLeave);
+        break;
+    }
     usleep(1000 * 1000);
+    // 销毁引擎实例,只有在收到on_fini_notify的回调之后，调用此方法才是安全的
     byte_rtc_destory(engine);
     
     // 关闭智能体，如果不主动调用， 智能体会在远端离开后3分钟离开
-    stop_voice_bot(room_info);
-    heap_caps_free(room_info);
+    // TODO: 目前需要在网官web手动停止智能体
+    heap_caps_free(roomInfo);
 
     // 关闭音频采播
-    recorder_pipeline_close(pipeline);
-    player_pipeline_close(player_pipeline);
     ESP_LOGI(TAG, "............. finished\n");
 }
 
 void VeRtcProtocol::SendAudio(const std::vector<uint8_t>& data) {
-    if (websocket_ == nullptr) {
-        return;
+    // if (websocket_ == nullptr) {
+    //     return;
+    // }
+    audio_frame_info_t audio_frame_info = {.data_type = AUDIO_DATA_TYPE_OPUS};
+    int iSendAudio = byte_rtc_send_audio_data(engine, roomInfo->room_id, data.data(), data.size(), &audio_frame_info);
+    // 0：成功 <br>
+    // -1：引擎实例不存在 <br>
+    // -2：输入参数为空
+    switch (iSendAudio)
+    {
+    case 0:
+        ESP_LOGI(TAG, "byte_rtc_send_audio_data successful, data size(%d)!", data.size());  
+        break;
+    case -1:
+        ESP_LOGE(TAG, "byte_rtc_send_audio_data failed: The engine instance is not exist!");  
+        break;   
+    case -2:
+        ESP_LOGE(TAG, "byte_rtc_send_audio_data failed: Input param is null!");  
+        break; 
+    default:
+        ESP_LOGE(TAG, "byte_rtc_send_audio_data failed: Invaid return value(%d)!", iSendAudio);  
+        break;
     }
-
-    websocket_->Send(data.data(), data.size(), true);
+    // websocket_->Send(data.data(), data.size(), true);
 }
 
 void VeRtcProtocol::SendText(const std::string& text) {
-    if (websocket_ == nullptr) {
-        return;
-    }
+    // if (websocket_ == nullptr) {
+    //     return;
+    // }
 
-    if (!websocket_->Send(text)) {
-        ESP_LOGE(TAG, "Failed to send text: %s", text.c_str());
-        SetError(Lang::Strings::SERVER_ERROR);
-    }
+    // if (!websocket_->Send(text)) {
+    //     ESP_LOGE(TAG, "Failed to send text: %s", text.c_str());
+    //     SetError(Lang::Strings::SERVER_ERROR);
+    // }
 }
 
 bool VeRtcProtocol::IsAudioChannelOpened() const {
-    return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
+    // return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
+    return true; // TODO
 }
 
 void VeRtcProtocol::CloseAudioChannel() {
@@ -359,6 +465,8 @@ void VeRtcProtocol::CloseAudioChannel() {
 }
 
 bool VeRtcProtocol::OpenAudioChannel() {
+    return true; // DOTO: 目前来看并不会用到websocket通讯
+
     if (websocket_ != nullptr) {
         delete websocket_;
     }
@@ -437,6 +545,8 @@ bool VeRtcProtocol::OpenAudioChannel() {
 }
 
 void VeRtcProtocol::ParseServerHello(const cJSON* root) {
+    return; // TODO: 不需要实现
+
     auto transport = cJSON_GetObjectItem(root, "transport");
     if (transport == nullptr || strcmp(transport->valuestring, "websocket") != 0) {
         ESP_LOGE(TAG, "Unsupported transport: %s", transport->valuestring);
@@ -452,4 +562,9 @@ void VeRtcProtocol::ParseServerHello(const cJSON* root) {
     }
 
     xEventGroupSetBits(event_group_handle_, VERTC_PROTOCOL_SERVER_HELLO_EVENT);
+}
+
+void VeRtcProtocol::OnIncomingAudio(std::function<void(std::vector<uint8_t>&& data)> callback) {
+    on_incoming_audio_ = callback;
+    g_on_incoming_audio = callback;
 }
